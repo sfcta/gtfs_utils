@@ -23,6 +23,7 @@ def HHMMSSpair_to_MPMpair(hhmmsspair):
     hhmmss1, hhmmss2 = hhmmsspair.split('-')
     mpm1 = HHMMSS_to_MPM(hhmmss1)
     mpm2 = HHMMSS_to_MPM(hhmmss2)
+    if mpm2 < mpm1: mpm2 += 24*60
     return (mpm1,mpm2)
 
 class GTFSFeed(object):
@@ -50,25 +51,48 @@ class GTFSFeed(object):
                 self.__dict__[name] = pd.read_csv(os.path.join(path,file))
             except:
                 print "%s not found in %s" % (file, path)
-        print self.agency
 
         # settings
+        self.has_time_periods       = False
         self.weekday_only           = weekday_only
         self.segment_by_service_id  = segment_by_service_id
 
-        # common groupings
-        # route_patterns group columns = []
         # Useful GTFS manipulations
         self.stop_sequence_cols = self.get_stop_sequence_cols()
         self.weekday_service_ids = self.get_weekday_service_ids()
+        self.used_stops     = self.get_used_stops(index='stop_id')
         if self.weekday_only:
             self.trips = self.trips[self.trips['service_id'].isin(self.weekday_service_ids)]
-        self.route_patterns  = self.get_route_patterns()
-        self.route_statistics = self.get_route_statistics()
-        self.used_stops     = self.get_used_stops(index='stop_id')
 
-##    def _reload(self):
-##        pass
+        # common groupings
+        self.route_trips        = None
+        self.route_patterns     = None
+        self.route_statistics   = None
+##        self.route_patterns  = self.get_route_patterns()
+##        self.route_patterns  = self.get_similarity_index()
+##        self.route_statistics = self.get_route_statistics()
+
+        # standard index columns to be used for grouping
+        self._route_trip_idx_cols = ['route_id','trip_id','shape_id','direction_id','route_short_name','route_long_name','route_desc']
+        self._trip_idx_cols = ['trip_id','direction_id']
+
+    def assign_direction(self):
+        '''
+        if direction is missing, assign inbound/outbound
+        '''
+        pass
+    
+    def is_aligned_stop_sequence(self):
+        '''
+        return true if there is a set correspondence between stop_id and stop_sequence for all routes
+        '''
+        pass
+        
+    def align_stop_sequence(self):
+        '''
+        reassign stop_sequences so there is a unique correspondence between stop_id and stop_sequence for all routes
+        '''
+        pass
         
     def drop_weekend(self):
         self.weekday_only = True
@@ -106,37 +130,66 @@ class GTFSFeed(object):
     def match_stops(self, other):
         return True
 
-    def get_route_statistics(self, custom_time_periods=None):
-        if custom_time_periods != None and not isinstance(custom_time_periods,list) and not isinstance(custom_time_periods,dict):
-            raise Exception("custom_time_periods MUST be None-type OR list-type of HH:MM:SS-HH:MM:SS pairs")
-
-        trip_route = pd.merge(self.routes,self.trips,on='route_id')
-        route_pattern = self.route_patterns
+    def apply_time_periods(self, time_periods):
+        # update column collections
+        self._route_trip_idx_cols += ['trip_departure_tp']
+        self._trip_idx_cols += ['trip_departure_tp']
         
-        #trip_route = pd.DataFrame(trip_route,columns=['route_id','route_short_name','trip_id','service_id'])
-        stop_times = pd.merge(self.stop_times,trip_route,on='trip_id',how='left')
-        stop_times['arr_mpm'] = stop_times['arrival_time'].map(HHMMSS_to_MPM)
-        stop_times['dep_mpm'] = stop_times['departure_time'].map(HHMMSS_to_MPM)
-        if isinstance(custom_time_periods, list):
-            for ctp in custom_time_periods:
-                tp_name = ctp
-                tp_start, tp_end = HHMMSSpair_to_MPMpair(ctp)
-                stop_times['%s' % ctp] = 0
-                stop_times['%s' % ctp] += 1 * stop_times['arr_mpm'].between(tp_start,tp_end)
+        self.has_time_periods = True        
+        if time_periods != None and not isinstance(time_periods,list) and not isinstance(time_periods,dict):
+            raise Exception("time_periods MUST be None-type OR list-type of HH:MM:SS-HH:MM:SS pairs")
 
-        elif isinstance(custom_time_periods, dict):
-            for key, value in custom_time_periods.iteritems():
-                tp_name = key
-                tp_start, tp_end = HHMMSSpair_to_MPMpair(value)
-                stop_times[key] = 0
-                stop_times[key] += 1 * stop_times['arr_mpm'].between(tp_start,tp_end)
+        self.stop_times['arr_mpm'] = self.stop_times['arrival_time'].map(HHMMSS_to_MPM)
+        self.stop_times['dep_mpm'] = self.stop_times['departure_time'].map(HHMMSS_to_MPM)
+        self.stop_times['arr_tp'] = 'other'
+        self.stop_times['dep_tp'] = 'other'
+        if isinstance(time_periods, list):
+            ntp = {}
+            for ctp in time_periods:
+                ntp['%s' % ctp] = ctp
+            time_periods = ntp
+
+        for key, value in time_periods.iteritems():
+            tp_name = key
+            tp_start, tp_end = HHMMSSpair_to_MPMpair(value)
+            arr_idx = self.stop_times[(self.stop_times['arr_mpm'].between(tp_start,tp_end))
+                                      | (self.stop_times['arr_mpm'].between(tp_start-24*60,tp_end-24*60))
+                                      | (self.stop_times['arr_mpm'].between(tp_start+24*60,tp_end+24*60))].index
+            dep_idx = self.stop_times[(self.stop_times['dep_mpm'].between(tp_start,tp_end))
+                                      | (self.stop_times['dep_mpm'].between(tp_start-24*60,tp_end-24*60))
+                                      | (self.stop_times['dep_mpm'].between(tp_start+24*60,tp_end+24*60))].index
+            self.stop_times.loc[arr_idx,'arr_tp'] = key
+            self.stop_times.loc[dep_idx,'dep_tp'] = key
+
+        first_stop = self.stop_times.groupby(['trip_id']).first()
+        self.trips = self.trips.set_index(['trip_id'])
+        self.trips['trip_departure_time'] = first_stop['departure_time']
+        self.trips['trip_departure_mpm'] = first_stop['dep_mpm']
+        self.trips['trip_departure_tp'] = first_stop['dep_tp']
+        self.trips = self.trips.reset_index()
+                
+    def set_route_statistics(self):
+        self.route_statistics = None
+        self.route_statistics = self.get_route_statistics()
+        return self.route_statistics
+        
+    def get_route_statistics(self):
+        if isinstance(self.route_statistics, pd.DataFrame): return self.route_statistics
+        if not isinstance(self.route_trips, pd.DataFrame):
+            self.route_trips = pd.merge(self.routes,self.trips,on='route_id')
+
         
         route_statistics = None
         return route_statistics
 
-    def get_route_patterns(self, custom_time_periods=None):
+    def set_route_patterns(self):
+        self.route_patterns = None
+        self.route_patterns = self.get_route_patterns()
+        return self.route_patterns
+            
+    def get_route_patterns(self):
         trip_route = pd.merge(self.routes,self.trips,on='route_id')
-        trip_route = pd.DataFrame(trip_route,columns=['route_id','trip_id','shape_id','direction_id','route_short_name','route_long_name','route_desc'])
+        trip_route = pd.DataFrame(trip_route,columns=self._route_trip_idx_cols)
         patterns = self.stop_times.pivot(index='trip_id',columns='stop_sequence',values='stop_id')
         patterns = patterns.reset_index()
         
@@ -162,10 +215,23 @@ class GTFSFeed(object):
         
     def get_similarity_index(self, base_flag_column='is_base_route'):
         # figure out which pattern is the 'base' pattern
-        route_pattern = self.route_patterns
-        grouped = route_pattern.groupby(['route_id','direction_id','route_short_name','route_long_name','route_desc'])
+        idx_cols = ['route_id','direction_id']
+        grouped = self.route_patterns.groupby(idx_cols)
+        route_pattern = self.route_patterns #.set_index(idx_cols)
+        route_pattern['is_base_route'] = 0
+        route_pattern['total_base_stops'] = 0
+        route_pattern['similar_base_stops'] = 0
+        route_pattern['similarity_index'] = 0
         
-        return route_patterns
+        for name, group in grouped:
+            this_group = pd.DataFrame(group,columns=self.stop_sequence_cols+['count'])
+            # assume the pattern that shows up the most is the base route
+            maxrow = this_group[this_group.index == this_group['count'].idxmax()]
+            route_pattern.loc[this_group.index,'total_base_stops'] = maxrow.T.count().sum()-1
+            route_pattern.loc[this_group.index,'similar_base_stops'] = this_group.eq(maxrow.values.tolist()[0]).T.sum() - 1
+        route_pattern['similarity_index'] = route_pattern['similar_base_stops'] / route_pattern['total_base_stops']
+
+        return route_pattern
     
     def __str__(self):
         ret = 'GTFS Feed at %s containing:' % self.path
@@ -184,6 +250,14 @@ class GTFSFeed(object):
 if __name__=='__main__':
     gtfs = GTFSFeed('..\SFMTA_20120319')
     print gtfs
+    time_periods = {'EA':"03:00:00-05:59:59",
+                    'AM':"06:00:00-08:59:59",
+                    'MD':"09:00:00-15:29:59",
+                    'PM':"15:30:00-18:29:59",
+                    'EV':"18:30:00-27:00:00"}
+    
+    gtfs.apply_time_periods(time_periods)
+    gtfs.set_route_patterns()
     route_patterns = gtfs.get_route_patterns()
     print route_patterns[0:10]
     
