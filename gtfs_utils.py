@@ -60,6 +60,7 @@ class GTFSFeed(object):
         self.used_stops             = None
 
         self.route_trips    = None
+        self.route_trip_stops = None
         self.route_patterns = None
         self.repr_trips     = None
         self.trip_to_repr_trip = None
@@ -118,10 +119,10 @@ class GTFSFeed(object):
 ##        patterns = self._get_similarity_index(patterns.reset_index())
 ##        patterns.loc[first_pattern['similarity_index'] >= 1,['direction_id']] = 0
 ##
-##    def _drop_stops_no_times(self):
-##        self.stop_times = self.stop_times[(pd.isnull(self.stop_times['arrival_time']) != True)
-##                                          & (pd.isnull(self.stop_times['departure_time']) != True)]
-##        
+    def _drop_stops_no_times(self):
+        self.stop_times = self.stop_times[(pd.isnull(self.stop_times['arrival_time']) != True)
+                                          & (pd.isnull(self.stop_times['departure_time']) != True)]
+        
 ##    def is_aligned_stop_sequence(self):
 ##        '''
 ##        return true if there is a set correspondence between stop_id and stop_sequence for all routes
@@ -224,7 +225,12 @@ class GTFSFeed(object):
         route_statistics['freq'] = 60 * route_statistics['num_runs'] / route_statistics['period_len_minutes']
         route_statistics = route_statistics.reset_index()
         return route_statistics
-   
+
+    def _get_stop_statistics(self):
+        stop_routes = pd.merge(self.stop_times, self.trips, on='trip_id')
+        stop_routes = pd.merge(stop_routes, self.routes, on='route_id')
+
+        
     def _get_route_patterns(self):
         trip_route = pd.merge(self.routes,self.trips,on='route_id')
         trip_route = pd.DataFrame(trip_route,columns=self._route_trip_idx_cols)
