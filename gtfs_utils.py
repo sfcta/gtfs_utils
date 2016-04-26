@@ -50,7 +50,7 @@ class GTFSFeed(object):
         self.stop_times     = None
         self.stops          = None
         self.trips          = None
-        
+
         # settings
         self.has_time_periods       = False
         self.weekday_only           = weekday_only
@@ -67,19 +67,20 @@ class GTFSFeed(object):
         self.patterns               = None
         self.route_statistics       = None
         self.stop_statistics        = None
+        self.route_stops            = None
         #self.stop_route             = None
 
         # standard index columns to be used for grouping
-        self._route_trip_idx_cols   = ['route_id','trip_id','shape_id','direction_id','route_short_name','route_long_name','route_desc']
+        self._route_trip_idx_cols   = ['route_id','trip_id','service_id','shape_id','direction_id','route_short_name','route_long_name','route_desc']
         self._route_dir_idx_cols    = ['route_id','route_short_name','route_long_name','direction_id']
         self._trip_idx_cols         = ['trip_id','direction_id']
         self._tp_idx_cols           = []
         self._route_pattern_info_cols = []
 
-    def load(self):
+    def load(self, encoding=None):
         for name, file in itertools.izip(self.all_names, self.all_files):
             try:
-                self.__dict__[name] = pd.read_csv(os.path.join(self.path,file))
+                self.__dict__[name] = pd.read_csv(os.path.join(self.path,file),encoding=encoding)
             except:
                 print "%s not found in %s" % (file, self.path)
                 
@@ -107,12 +108,70 @@ class GTFSFeed(object):
             except Exception as e:
                 print 'error writing file %s to path %s: %s' % (file, path, e)
 
-    def standardize(self):
+##    def export_shapefiles(path='.', routes='routes.shp', stops='stops.shp'):
+##        shape_writer = shapefile.Writer(shapeType=shapefile.POLYLINE)
+##        shape_writer.field('route_id',          'N',    10, 0)
+##        shape_writer.field('route_short_name',  'C',    10, 0)
+##        shape_writer.field('route_long_name',   'C',    50, 0)
+##        shape_writer.field('direction_id',      'N',    1,  0)
+##        shape_writer.field('shape_id',          'N',    10, 0)
+##        if isinstance(self.shapes, pd.DataFrame):
+##            for i, shape in self.shapes.iterrows():
+##                if shape_id == None:
+##                    route_id = shape['route_id']
+##                    route_short_name =  shape['route_short_name']
+##                    route_long_name = shape['route_long_name']
+##                    direction_id = shape['direction_id']
+##                    shape_id = shape['shape_id']
+##                    points = []
+##                if shape_id != shape['shape_id']:
+##                    shape_writer.line([points])
+##                    shape_writer.record(route_id, route_short_name, route_long_name, direction_id, shape_id)
+##                    route_id = shape['route_id']
+##                    route_short_name =  shape['route_short_name']
+##                    route_long_name = shape['route_long_name']
+##                    direction_id = shape['direction_id']
+##                    shape_id = shape['shape_id']
+##                    points = []
+##                point = [shape['shape_pt_lon'],shape['shape_pt_lat']]
+##                points.append(point)
+##            shape_writer.line([points])
+##            shape_writer.record(shape['route_id'], shape['route_short_name'],
+##                                shape['route_long_name'], shape['direction_id'], shape['shape_id'])
+##            shape_writer.save(os.path.join(path,routes))
+##        elif isinstance(self.route_stops, pd.DataFrame):
+##            for i, route in self.routes.iterrows():
+##                if route_id == None:
+##                    route_id = route['route_id']
+##                    route_short_name =  route['route_short_name']
+##                    route_long_name = route['route_long_name']
+##                    direction_id = route['direction_id']
+##                    points = []
+##                if route_id != route['route_id']:
+##                    route_writer.line([points])
+##                    route_writer.record(route_id, route_short_name, route_long_name, direction_id, route_id)
+##                    route_id = route['route_id']
+##                    route_short_name =  route['route_short_name']
+##                    route_long_name = route['route_long_name']
+##                    direction_id = route['direction_id']
+##    
+##                    points = []
+##                point = [route['shape_pt_lon'],shape['shape_pt_lat']]
+##                points.append(point)
+##            shape_writer.line([points])
+##            shape_writer.record(shape['route_id'], shape['route_short_name'],
+##                                shape['route_long_name'], shape['direction_id'], shape['shape_id'])
+##            shape_writer.save(os.path.join(path,routes))
+            
+    def standardize(self, dir_col='trip_headsign'):
         self._drop_stops_no_times()
         if 'direction_id' not in self.trips.columns.tolist():
-            # self.trips['direction_id'] = 0 # changed Bhargav 4/5/2016
+            # changed Bhargav 4/5/2016
             # Let's try trip_headsign and see if it helps in case of AC Transit
-            self.trips['direction_id'] = self.trips['trip_headsign']
+            if dir_col in self.trips.columns:
+                self.trips['direction_id'] = self.trips[dir_col]
+            else:
+                self.trips['direction_id'] = 0 
         #self._assign_direction()
     
     def build_common_dfs(self):
@@ -128,9 +187,13 @@ class GTFSFeed(object):
         
         self.route_patterns     = self._get_route_patterns()
         self.route_patterns     = self._get_similarity_index(self.route_patterns, idx_cols=['route_id','direction_id'])
+        non_stop_seq_cols = [x for x in self.route_patterns.columns if x not in self.stop_sequence_cols]
+        self.route_patterns = pd.DataFrame(self.route_patterns, columns=non_stop_seq_cols+self.stop_sequence_cols)
         pattern_ids = self.route_patterns['pattern_id'].drop_duplicates().tolist()
         self.trip_patterns      = self.trips[self.trips['trip_id'].isin(pattern_ids)]
         self.stop_patterns      = self.stop_times[self.stop_times['trip_id'].isin(pattern_ids)]
+        self.stop_patterns      = pd.merge(self.stop_patterns, self.stops, on='stop_id')
+        self.stop_patterns      = self.stop_patterns.sort(['trip_id','stop_sequence'])
 
         ##if self.has_time_periods == False:
         sp1 = self.stop_patterns.pivot(index='trip_id',columns='stop_sequence',values='stop_id').reset_index()
@@ -155,6 +218,7 @@ class GTFSFeed(object):
         self.route_trips['trip_departure_time'] = trips_with_departure['trip_departure_time']
         self.route_trips['trip_departure_mpm'] = trips_with_departure['trip_departure_mpm']
         self.route_trips = self.route_trips.reset_index()
+    
         #self.route_trips.to_csv('route_trips.csv')
         # statistics
         self.route_statistics   = self._get_route_statistics() # frequency by route
@@ -163,6 +227,10 @@ class GTFSFeed(object):
         self.all_files += ['route_trips.txt', 'stop_routes.txt', 'route_patterns.txt', 'trip_patterns.txt', 'stop_patterns.txt', 'route_statistics.txt', 'stop_statistics.txt']
         self.all_names += ['route_trips', 'stop_routes', 'route_patterns', 'trip_patterns', 'stop_patterns', 'route_statistics', 'stop_statistics']
 
+    def get_route_statistics(self, pivot_timeperiods=True):
+        self.route_statistics = self._get_route_statistics(pivot_timeperiods)
+        return self.route_statistics
+    
     def spatial_match_stops(self, left, right):
         pass
         
@@ -175,7 +243,7 @@ class GTFSFeed(object):
         self.trips = self.trips[self.trips['service_id'].isin(self.weekday_service_ids)]
         self.route_statistics = self.route_statistics[self.route_statistics['service_id'].isin(self.weekday_service_ids)]
         self.route_patterns = self.route_patterns[self.route_patterns['service_id'].isin(self.weekday_service_ids)]
-
+        
     def drop_days(self, days=['saturday','sunday']):
         service_ids = []
         for day in days:
@@ -251,14 +319,15 @@ class GTFSFeed(object):
         self.trips['trip_departure_tp'] = first_stop['dep_tp']
         self.trips = self.trips.reset_index()
                 
-    def _get_route_statistics(self):
-        grouped = self.route_trips.fillna(-1).groupby(self._route_dir_idx_cols+['pattern_id']+self._tp_idx_cols)
-        rte_dir_pattern_tp_cols = self._route_dir_idx_cols+['pattern_id']+self._tp_idx_cols
-        rte_dir_pattern_cols    = self._route_dir_idx_cols+['pattern_id']
+    def _get_route_statistics(self, pivot_timeperiods=True):
+        grouped = self.route_trips.fillna(-1).groupby(self._route_dir_idx_cols+['service_id','pattern_id']+self._tp_idx_cols)
+        rte_dir_pattern_tp_cols = self._route_dir_idx_cols+['service_id','pattern_id']+self._tp_idx_cols
+        rte_dir_pattern_cols    = self._route_dir_idx_cols+['service_id','pattern_id']
         # calculate average headways / frequencies based on number of runs and length of time period
         route_statistics = grouped.sum()
         route_statistics = pd.DataFrame(route_statistics,columns=[])
         route_statistics['trips'] = grouped.size()
+        route_statistics['shape_id'] = grouped.first()['shape_id']
         route_statistics = route_statistics.reset_index()
         
         if self.has_time_periods:
@@ -266,22 +335,27 @@ class GTFSFeed(object):
                 start, stop = HHMMSSpair_to_MPMpair(hhmmsspair)
                 length = round(stop-start,0)
                 route_statistics.loc[route_statistics['trip_departure_tp'] == tp,'period_len_minutes'] = length
-            route_statistics = route_statistics.set_index(self._route_dir_idx_cols+['pattern_id']+self._tp_idx_cols)
+            route_statistics = route_statistics.set_index(self._route_dir_idx_cols+['service_id','pattern_id']+self._tp_idx_cols)
             route_statistics['freq'] = 60 * route_statistics['trips'] / route_statistics['period_len_minutes']
             route_statistics['avg_headway'] = route_statistics['period_len_minutes'] / route_statistics['trips']
-            route_statistics = route_statistics.reset_index()
-            pivot = route_statistics.pivot_table(index=self._route_dir_idx_cols+['pattern_id'],columns=self._tp_idx_cols,values=['trips','freq','avg_headway'])
-            route_statistics = pd.DataFrame(self.route_patterns,columns=self._route_dir_idx_cols+['pattern_id']+self._route_pattern_info_cols)
-            route_statistics = route_statistics.set_index(self._route_dir_idx_cols+['pattern_id'])
-            for stat in ['trips','freq','avg_headway']:
-                for tp in self.time_periods.iterkeys():
-                    route_statistics['%s_%s' % (tp, stat)] = pivot[stat][tp]
+            if pivot_timeperiods:
+                route_statistics = route_statistics.reset_index()
+                pivot = route_statistics.pivot_table(index=self._route_dir_idx_cols+['service_id','pattern_id'],columns=self._tp_idx_cols,values=['trips','freq','avg_headway'])
+                route_statistics = pd.DataFrame(self.route_patterns,columns=self._route_dir_idx_cols+['service_id','pattern_id']+self._route_pattern_info_cols)
+                for col in self._route_dir_idx_cols:
+                    route_statistics[col] = route_statistics[col].fillna(-1)
+                route_statistics = route_statistics.set_index(self._route_dir_idx_cols+['service_id','pattern_id'])
+                for stat in ['trips','freq','avg_headway']:
+                    for tp in self.time_periods.iterkeys():
+                        route_statistics['%s_%s' % (tp, stat)] = pivot[stat][tp]
         else:
             route_statistics['freq'] = route_statistics['trips'] / 24
             route_statistics['avg_headway'] = 60 / route_statistics['freq']
 
         # calculate average headways and headway variation from actual headways
         sorted_trips = self.route_trips.sort(self._route_dir_idx_cols+['pattern_id','trip_departure_mpm'])
+        for col in self._route_dir_idx_cols:
+            sorted_trips[col] = sorted_trips[col].fillna(-1)
         sorted_trips['next_departure'] = sorted_trips['trip_departure_mpm'].shift(-1)
         sorted_trips['next_pattern'] = sorted_trips['pattern_id'].shift(-1)
         sorted_trips = sorted_trips[sorted_trips['pattern_id'] == sorted_trips['next_pattern']]
@@ -291,7 +365,7 @@ class GTFSFeed(object):
         if sorted_trips['headway'].lt(0).sum() > 0:
             print "sorted trips have negative headways"
             print sorted_trips[sorted_trips['headway'].lt(0)]
-            sys.exit()
+            #sys.exit()
 
         # find outliers (ex. large gaps in service for routes that only run in peak)
         grouped = sorted_trips.groupby(self._route_dir_idx_cols+['pattern_id']+self._tp_idx_cols)
@@ -304,7 +378,7 @@ class GTFSFeed(object):
             minmax.append(idxmax)
 
         no_min_max = sorted_trips[~sorted_trips.index.isin(minmax)]
-        test = no_min_max.groupby(self._route_dir_idx_cols+['pattern_id']+self._tp_idx_cols)['headway'].agg([np.mean,np.std])
+        test = no_min_max.groupby(self._route_dir_idx_cols+['service_id','pattern_id']+self._tp_idx_cols)['headway'].agg([np.mean,np.std])
 
         for name, group in grouped:
             if name not in test.index: continue
@@ -312,16 +386,20 @@ class GTFSFeed(object):
             if len(outliers > 0):
                 sorted_trips.loc[outliers.index,'outlier'] = 1
 
-        sorted_trips.to_csv('sorted_trips.csv')
+        #sorted_trips.to_csv('sorted_trips.csv')
         sorted_trips = sorted_trips[sorted_trips['outlier'] == 0]
-        calc_headways = sorted_trips.groupby(self._route_dir_idx_cols+['pattern_id']+self._tp_idx_cols)
+
+        calc_headways = sorted_trips.groupby(self._route_dir_idx_cols+['service_id','pattern_id']+self._tp_idx_cols)
         calc_headways = calc_headways['headway'].agg([np.mean, np.std, np.median, np.min, np.max])
-        
+
         if self.has_time_periods:
-            pivot = calc_headways.reset_index().pivot_table(index=self._route_dir_idx_cols+['pattern_id'],columns=self._tp_idx_cols,values=['mean','std','median','amin','amax'])
-            for stat in ['mean','std','median','amin','amax']:
-                for tp in self.time_periods.iterkeys():
-                    route_statistics['%s_%s_headway' % (tp, stat)] = pivot[stat][tp]
+            if pivot_timeperiods:
+                pivot = calc_headways.reset_index().pivot_table(index=self._route_dir_idx_cols+['service_id','pattern_id'],columns=self._tp_idx_cols,values=['mean','std','median','amin','amax'])
+                for stat in ['mean','std','median','amin','amax']:
+                    for tp in self.time_periods.iterkeys():
+                        route_statistics['%s_%s_headway' % (tp, stat)] = pivot[stat][tp]
+        route_statistics.to_csv('route_stats.csv')
+        route_statistics = route_statistics.reset_index()
         return route_statistics
 
     def _get_stop_statistics(self):
@@ -359,6 +437,7 @@ class GTFSFeed(object):
         route_pattern = grouped_route_pattern.count()
         route_pattern['count'] = route_pattern['trip_id']
         route_pattern['shape_id'] = grouped_route_pattern.first()['shape_id']
+        route_pattern['trip_id'] = grouped_route_pattern.first()['trip_id']
 
         # sometimes the same pattern shows up under multiple routes (why? prob out of service nonsense)
         # so just keep one pattern that all those routes can use.
@@ -369,7 +448,19 @@ class GTFSFeed(object):
         route_pattern = route_pattern.replace(-1, np.nan)
 
         return route_pattern
-        
+
+    def _get_trip_id_to_pattern_id(self):
+        trip_stops = pd.merge(self.trips, self.stop_patterns, on=['trip_id'])
+        trip_stop_patterns = trip_stops.pivot(index='trip_id',columns='stop_sequence',values='stop_id')
+        pattern_stop_patterns = self.stop_patterns.pivot(index='trip_id',columns='stop_sequence',values='stop_id')
+
+        trip_stop_patterns = trip_stop_patterns.reset_index().set_index(self.stop_sequence_cols)
+        pattern_stop_patterns = pattern_stop_patterns.reset_index().set_index(self.stop_sequence_cols)
+        trip_stop_patterns['pattern_id'] = pattern_stop_patterns['trip_id']
+        trip_stop_patterns = trip_stop_patterns.reset_index()
+        trip_stop_patterns = pd.DataFrame(trip_stop_patterns,columns=self._route_trip_idx_cols+['pattern_id'])
+        return trip_to_pattern
+    
     def _get_stop_sequence_cols(self):
         stop_sequence_cols = list(set(self.stop_times['stop_sequence'].tolist()))
         return stop_sequence_cols
