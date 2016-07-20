@@ -425,7 +425,12 @@ class GTFSFeed(object):
         patterns = patterns.reset_index()
         if not self.stop_sequence_cols:
             self.stop_sequence_cols = self._get_stop_sequence_cols()
-            
+
+        for col in self.stop_sequence_cols:
+            match_cols = patterns.reset_index().columns.tolist()
+            if col not in match_cols:
+                patterns[col] = np.nan
+                
         route_pattern = pd.merge(trip_route, patterns, on='trip_id')
         columns = route_pattern.columns.tolist()
         columns.remove('trip_id')
